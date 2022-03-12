@@ -3,12 +3,24 @@
 import argparse, socket, time, json, select, struct, sys, math
 
 
+class Packet:
+    def __init__(self, data, seq_num):
+        self.data = data
+        self.seq_num = seq_num
+
+    def __eq__(self, other):
+        return self.seq_num == other.seq_num
+
+    def __str__(self):
+        return json.dumps({'seq_num': self.seq_num})
+
+
 class Receiver:
     def __init__(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('0.0.0.0', 0))
         self.port = self.socket.getsockname()[1]
-        self.log('Bound to port %d' % self.port)
+        log('Bound to port %d' % self.port)
 
         self.remote_host = None
         self.remote_port = None
@@ -16,17 +28,16 @@ class Receiver:
         self.ack_num = 0
         self.seq_num = 0
 
+        self.packets = []
+
     def send(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), (self.remote_host, self.remote_port))
-
-    def log(self, message):
-        sys.stderr.write(message + '\n')
-        sys.stderr.flush()
 
     def run(self):
         while True:
             socks = select.select([self.socket], [], [])[0]
             for conn in socks:
+                log('RECEIVED MESSAGE FROM SENDER')
                 k, addr = conn.recvfrom(65535)  # TODO: shouldn't this be changed to 1500 Bytes?
 
                 # Grab the remote host/port if we don't already have it
@@ -34,16 +45,23 @@ class Receiver:
                     self.remote_host = addr[0]
                     self.remote_port = addr[1]
 
+                # decode the packet
                 msg = json.loads(k.decode('utf-8'))
-                self.log('Received data message')
+                pkt = Packet(msg['data'], msg['seq'])
+                log(f'Received data message: {msg}')
 
                 # Print out the data to stdout
-                data = msg['data']
-                print(data, end='', flush=True)
-                self.ack_num += len(data)
+                if pkt not in self.packets:
+                    # this is a new packet
+                    self.packets.append(pkt)
+                    print(pkt.data, end='', flush=True)
+                    self.ack_num += len(pkt.data)
+                    self.send({'type': 'ack', 'ack': self.ack_num})
 
-                # Always send back an ack
-                self.send({'type': 'ack', 'ack': self.ack_num})
+
+def log(message):
+    sys.stderr.write(message + '\n')
+    sys.stderr.flush()
 
 
 if __name__ == '__main__':
@@ -51,3 +69,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     sender = Receiver()
     sender.run()
+
+
+# TODO: issues: the receiver can't receive any messages (maybe try to write iteratively from starter code)
