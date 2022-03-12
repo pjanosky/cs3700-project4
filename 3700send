@@ -19,57 +19,126 @@ DATA_SIZE = 1375  # the maximum amount of data sent in one packet
 MAX_MSG_SIZE = 65535  # the maximum size of a message in bytes that the sender expects to receive
 
 
+# class Sender:
+#     def __init__(self, host, port):
+#         self.host = host
+#         self.remote_port = int(port)
+#         log('Sender starting up using port %s' % self.remote_port)
+#         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+#         self.socket.bind(('0.0.0.0', 0))
+#         self.seq_num = 0
+#         self.ack_num = 0
+#         self.adv_wnd = DATA_SIZE * 2
+#         self.packets = []
+#
+#     # send a json encoded message to the receiver
+#     def send_msg(self, message):
+#         self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
+#
+#     # run the sender program
+#     def run(self):
+#         while True:
+#             sockets = [self.socket, sys.stdin] if self.ack_num >= self.seq_num - self.adv_wnd else [self.socket]
+#             socks = select.select(sockets, [], [], 0.1)[0]
+#
+#             for conn in socks:
+#                 if conn == self.socket:
+#                     self.recv_ack(conn)
+#                 elif conn == sys.stdin:
+#                     self.recv_input()
+#
+#                 # send all the packets we can based on the current window
+#                 log(f'seq_num: {self.seq_num}, ack_num: {self.ack_num}, adv_wnd: {self.adv_wnd}')
+#                 self.send_packets(self.seq_num)
+#
+#     def recv_ack(self, conn):
+#         data, addr = conn.recvfrom(MAX_MSG_SIZE)
+#         msg = json.loads(data.decode('utf-8'))
+#         self.ack_num = msg['ack']
+#         log(f'Received ACK: {msg}')
+#
+#     def recv_input(self):
+#         # receiving more data to send
+#         data = sys.stdin.read(DATA_SIZE)
+#         log(f'reading input')
+#
+#         # check if all data has been sent
+#         if len(data) == 0:
+#             log('All done!')
+#             sys.exit(0)
+#
+#         # cache a new packet to be sent
+#         pkt = Packet(data, self.seq_num)
+#         self.packets.append(pkt)
+#
+#     # sends all packet after a given sequence number and within the current window
+#     def send_packets(self, seq_num):
+#         limit = self.ack_num + self.adv_wnd
+#         for pkt in self.packets:
+#             if pkt.seq_num >= seq_num and pkt.seq_num + len(pkt.data) <= limit:
+#                 self.send_pkt(pkt)
+#
+#     # sends a data message for a given packet
+#     def send_pkt(self, pkt):
+#         self.seq_num += len(pkt.data)
+#         msg = {'type': 'data', 'seq': self.seq_num, 'data': pkt.data}
+#         log(f'Sending data to receiver: {pkt.data}')
+#         self.send_msg(msg)
+
+
 class Sender:
     def __init__(self, host, port):
         self.host = host
         self.remote_port = int(port)
-        log('Sender starting up using port %s' % self.remote_port)
+        self.log("Sender starting up using port %s" % self.remote_port)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('0.0.0.0', 0))
+        self.waiting = False
+
         self.seq_num = 0
         self.ack_num = 0
         self.adv_wnd = DATA_SIZE * 2
         self.packets = []
 
-    # send a json encoded message to the receiver
+    def log(self, message):
+        sys.stderr.write(message + "\n")
+        sys.stderr.flush()
+
     def send_msg(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
 
-    # run the sender program
     def run(self):
         while True:
-            sockets = [self.socket, sys.stdin] if self.ack_num >= self.seq_num - self.adv_wnd else [self.socket]
-            socks = select.select(sockets, [], [], 0.1)[0]
+            sockets = [self.socket, sys.stdin] if not self.waiting else [self.socket]
 
+            socks = select.select(sockets, [], [], 0.1)[0]
             for conn in socks:
                 if conn == self.socket:
                     self.recv_ack(conn)
                 elif conn == sys.stdin:
                     self.recv_input()
-
-                # send all the packets we can based on the current window
-                log(f'seq_num: {self.seq_num}, ack_num: {self.ack_num}, adv_wnd: {self.adv_wnd}')
                 self.send_packets(self.seq_num)
+
+    def recv_input(self):
+        data = sys.stdin.read(DATA_SIZE)
+        if len(data) == 0:
+            self.log("All done!")
+            sys.exit(0)
+
+        msg = {"type": "msg", "data": data}
+        self.log("Sending message '%s'" % msg)
+        # self.send_pkt(Packet(msg['data'], 0))
+        self.waiting = True
+
+        pkt = Packet(data, self.seq_num)
+        self.packets.append(pkt)
 
     def recv_ack(self, conn):
         data, addr = conn.recvfrom(MAX_MSG_SIZE)
         msg = json.loads(data.decode('utf-8'))
         self.ack_num = msg['ack']
+        self.waiting = False
         log(f'Received ACK: {msg}')
-
-    def recv_input(self):
-        # receiving more data to send
-        data = sys.stdin.read(DATA_SIZE)
-        log(f'reading input')
-
-        # check if all data has been sent
-        if len(data) == 0:
-            log('All done!')
-            sys.exit(0)
-
-        # cache a new packet to be sent
-        pkt = Packet(data, self.seq_num)
-        self.packets.append(pkt)
 
     # sends all packet after a given sequence number and within the current window
     def send_packets(self, seq_num):
@@ -105,3 +174,6 @@ if __name__ == '__main__':  # TODO: search this
     args = parse_args()
     sender = Sender(args.host, args.port)
     sender.run()
+
+
+# TODO: theres a problem with the ack/seq numbers and getting select to correctly scan stdin
