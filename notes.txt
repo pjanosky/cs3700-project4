@@ -1,0 +1,58 @@
+------------------------------------------------
+SENDER
+------------------------------------------------
+Packets
+  - time when packet was sent
+  - time when ack for a packet was receieved
+  - the data in that packet
+    - seq and ack numbers
+  - sequence number for that packet
+
+
+Connection
+  - IP address
+  - port
+  
+
+Transport Protocol
+  - current sequence number
+  - current ack number
+  - packets
+  - connection
+  - RTT estimate
+
+
+------------------------------------------------
+Reciever
+------------------------------------------------
+  - current sequence number ???
+  - current ack number
+  - port
+
+
+
+
+------------------------------------------------
+Packet Header
+------------------------------------------------
+  - sequence number
+  - ack number
+
+
+
+
+
+
+
+self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+self.socket.bind(('localhost', 0))
+self.socket.sendto(message.encode('utf-8'), ('localhost', self.port))
+
+
+
+
+
+
+
+
+
