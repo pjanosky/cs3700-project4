@@ -1,0 +1,62 @@
+#!/usr/bin/env -S python3 -u
+
+import argparse, socket, time, json, select, struct, sys, math
+
+DATA_SIZE = 1375
+MAX_MSG_SIZE = 65535
+
+
+class Sender:
+    def __init__(self, host, port):
+        self.host = host
+        self.remote_port = int(port)
+        self.log('Sender starting up using port %s' % self.remote_port)
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(('0.0.0.0', 0))
+        self.seq_num = 0
+        self.ack_num = 0
+        self.adv_wnd = DATA_SIZE * 2
+
+    def log(self, message):
+        sys.stderr.write(message + '\n')
+        sys.stderr.flush()
+
+    def send(self, message):
+        self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
+
+    def run(self):
+        while True:
+            sockets = [self.socket, sys.stdin] if self.ack_num > self.seq_num - self.adv_wnd else [self.socket]
+
+            socks = select.select(sockets, [], [], 0.1)[0]
+            for conn in socks:
+                if conn == self.socket:
+                    # message from receiver (must be an ACK)
+                    data, addr = conn.recvfrom(MAX_MSG_SIZE)
+                    msg = json.loads(data.decode('utf-8'))
+                    self.ack_num = msg['ack']
+                    self.log(f'Received ACK: {msg}')
+                elif conn == sys.stdin:
+                    # receiving more data to send
+                    data = sys.stdin.read(DATA_SIZE)
+
+                    # check if all data has been sent
+                    if len(data) == 0:
+                        self.log('All done!')
+                        sys.exit(0)
+
+                    # send data message to receiver
+                    self.seq_num += len(data)
+                    msg = {'type': 'data', 'data': data}
+                    self.log('Sending data message')
+                    self.send(msg)
+
+
+
+if __name__ == '__main__':  # TODO: search this
+    parser = argparse.ArgumentParser(description='send data')
+    parser.add_argument('host', type=str, help='Remote host to connect to')
+    parser.add_argument('port', type=int, help='UDP port number to connect to')
+    args = parser.parse_args()
+    sender = Sender(args.host, args.port)
+    sender.run()
