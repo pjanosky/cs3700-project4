@@ -1,9 +1,9 @@
 #!/usr/bin/env -S python3 -u
 
-import argparse, socket, time, json, select, sys, zlib
+import argparse, socket, json, select, sys, zlib
 from functools import reduce
 
-from packet import Packet
+from packet import Packet, now
 
 
 DATA_SIZE = 1375  # the maximum amount of data sent in one packet
@@ -35,7 +35,7 @@ class Sender:
         data = sys.stdin.read(DATA_SIZE)
         while len(data) > 0:
             log('read data')
-            self.packets.append(Packet(data, False, None))
+            self.packets.append(Packet(0, data, False, None))  # TODO: fix constructor
             data = sys.stdin.read(DATA_SIZE)
         log(f'number of packets: {len(self.packets)}')
 
@@ -153,16 +153,6 @@ class Sender:
                 return i - 1
         return len(self.packets) - 1
 
-    # the number of bytes that have been successfully ACKed
-    def ack_num(self):
-        total = 0
-        for i, pkt in enumerate(self.packets):
-            if not pkt.acked:
-                return total
-            else:
-                total += len(pkt.data)
-        return total
-
     # returns the number of packets that can be in transit (un-acked)
     def window(self):
         return self.cgn_wnd
@@ -196,11 +186,6 @@ def parse_args():
     parser.add_argument('host', type=str, help='Remote host to connect to')
     parser.add_argument('port', type=int, help='UDP port number to connect to')
     return parser.parse_args()
-
-
-# returns the current time since the epcoh in ms
-def now():
-    return int(time.time() * 1000)
 
 
 # run the sender program

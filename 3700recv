@@ -1,7 +1,7 @@
 #!/usr/bin/env -S python3 -u
 
-import argparse, socket, time, json, select, sys, zlib
-from packet import Packet
+import argparse, socket, json, select, sys, zlib
+from packet import Packet, now
 
 
 class Receiver:
@@ -14,8 +14,9 @@ class Receiver:
         self.remote_host = None
         self.remote_port = None
 
-        self.packets = []
-        self.output_idx = -1
+        self.received = []  # a bitmap of which packets have been received
+        self.cached_packets = []  # the packets that have yet to be outputted
+        self.output_index = -1  # the index of the last packet that has been outputted
 
     def send(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), (self.remote_host, self.remote_port))
@@ -39,13 +40,14 @@ class Receiver:
                 if msg is None:
                     log('Received corrupted message')
                 else:
-                    pkt = Packet(msg['data'], None, None)
+                    pkt = Packet(msg['index'], msg['data'], None, None)
                     self.log(f"Received data message, idx: {msg['index']}")
                     self.send_ack(msg['index'])
 
-                    if msg['index'] >= len(self.packets) or self.packets[msg['index']] is None:
+                    if not self.was_received(msg['index']):
                         # this is a new packet
-                        self.insert_pkt(pkt, msg['index'])
+                        self.mark_received(msg['index'])
+                        self.cached_packets.append(pkt)
                         self.output_data()
 
     def valid_msg(self, data):
@@ -70,32 +72,36 @@ class Receiver:
         log(f'Sending ACK: index={index}')
         self.send(msg)
 
-    def insert_pkt(self, pkt, i):
-        if i >= len(self.packets):
-            self.packets += [None for _ in range(i - len(self.packets))]
-            self.packets.append(pkt)
+    def mark_received(self, index):
+        if index >= len(self.received):
+            self.received += [False for _ in range(index - len(self.received))]
+            self.received.append(True)
         else:
-            self.packets[i] = pkt
+            self.received[index] = True
+
+    def was_received(self, index):
+        return index < len(self.received) and self.received[index]
+
+    def pop_cached(self, index):
+        for pkt in self.cached_packets:
+            if pkt.index == index:
+                self.cached_packets.remove(pkt)
+                return pkt
+        return None
 
     def output_data(self):
-        for i in range(self.output_idx + 1, len(self.packets)):
-            pkt = self.packets[i]
-            if pkt is None:
-                break
+        for i in range(self.output_index + 1, len(self.received)):
+            if self.was_received(i):
+                self.output_index = i
+                print(self.pop_cached(i).data, end='', flush=True)
             else:
-                self.output_idx = i
-                print(pkt.data, end='', flush=True)
+                return
 
     def log_acks(self):
         result = '['
-        for i in range(0, len(self.packets)):
-            result += f'{i if self.packets[i] is not None else "none"}, '
+        for i in range(0, len(self.received)):
+            result += f'{i if self.was_received(i) else "_"}, '
         log(result + ']')
-
-
-# returns the current time since the epcoh in ms
-def now():
-    return int(time.time() * 1000)
 
 
 def log(message):
