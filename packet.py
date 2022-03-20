@@ -10,11 +10,10 @@ class Packet:
     def was_sent(self):
         return self.send_time is not None
 
-
+    def in_transit(self):
+        return self.was_sent() and not self.acked
 
 
 # returns the current time since the epcoh in ms
 def now():
     return int(time.time() * 1000)
-
-

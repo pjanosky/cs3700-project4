@@ -1,6 +1,8 @@
 #!/usr/bin/env -S python3 -u
 
 import argparse, socket, time, json, select, sys, zlib
+from functools import reduce
+
 from packet import Packet
 
 
@@ -18,10 +20,11 @@ class Sender:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('0.0.0.0', 0))
 
-        self.seq_num = 0
-        self.seq_idx = -1
         self.packets = []
         self.rtt = 1000  # the estimated RTT in milliseconds
+        self.adv_wnd = 4.0
+        self.cgn_wnd = 1.0
+        self.ss_thresh = 15
 
     # sends a string message to the receiver
     def send_msg(self, message):
@@ -34,6 +37,7 @@ class Sender:
             log('read data')
             self.packets.append(Packet(data, False, None))
             data = sys.stdin.read(DATA_SIZE)
+        log(f'number of packets: {len(self.packets)}')
 
         while True:
             # if self.seq_num < self.ack_num + self.wnd:
@@ -51,6 +55,8 @@ class Sender:
                 #     self.recv_input()
             self.send_packets()
             self.resend_packets()
+            log(f'WINDOW: {self.window()}, RTT: {self.rtt}, {"ss" if self.cgn_wnd < self.ss_thresh else "avoid"}')
+            # self.log_unacked()
 
     # # handles receiving data from the simulator to send to the receiver
     # def recv_input(self):
@@ -62,40 +68,61 @@ class Sender:
 
     # handles receiving an ack from the receiver
     def recv_ack(self, conn):
+        # parser ack message
         data, addr = conn.recvfrom(MAX_MSG_SIZE)
         msg = self.valid_ack(data)
         if msg is None:
+            # packet was corrupted
             log('Received corrupted ACK')
         else:
+            # packet was not corrupted
             log(f'Received ACK: {msg}')
-            pkt =  self.packets[msg['index']]
+
+            # mark packet as ACKed
+            pkt = self.packets[msg['index']]
             pkt.acked = True
+
+            # update RTT estimate
             self.rtt = ALPHA * self.rtt + (1 - ALPHA) * (now() - pkt.send_time)
 
+            # update congestion window
+            if self.cgn_wnd < self.ss_thresh:
+                # slow start (multiplicative increase)
+                self.cgn_wnd += 1
+            else:
+                # congestion avoidance (additive increase)
+                self.cgn_wnd += 1 / self.cgn_wnd
+
+            # exit if all packets have been sucessfully received
             if self.ack_idx() == len(self.packets) - 1:
                 log('All done!')
                 exit(0)
 
-            self.log_unacked()
-
     # sends all data messages not yet send withing the current window
     def send_packets(self):
-        i = self.seq_idx + 1
-        while i < len(self.packets) and self.seq_num < self.window():
+        i = self.ack_idx() + 1
+        while i < len(self.packets) and self.in_transit() < int(self.window()):
             pkt = self.packets[i]
-            log(f'Sending data to receiver: index={i}')
-            self.send_packet(pkt, i)
-            self.seq_idx += 1
-            self.seq_num += len(pkt.data)
+            if not pkt.was_sent():
+                log(f'Sending data to receiver: index={i}')
+                self.send_packet(pkt, i)
             i += 1
 
     # retransmit any packets that have not been ACKed withing a period of time
     def resend_packets(self):
-        timeout = now() - self.rtt * 2
+        timeout = now() - int(self.rtt) * 2
+
         # resend any packets that were sent before timeout
         for i, pkt in enumerate(self.packets):
             if not pkt.acked and pkt.was_sent() and pkt.send_time < timeout:
-                log(f'Resending data to receiver: index={i}')
+                # there was a timeout (pkt was dropped)
+                log(f'--Resending data to receiver: index={i}')
+
+                # adjust slow start threshold and congestion window
+                self.ss_thresh = self.cgn_wnd / 2
+                self.cgn_wnd = self.ss_thresh
+
+                # resend packet
                 self.send_packet(pkt, i)
 
     def send_packet(self, pkt, i):
@@ -103,7 +130,6 @@ class Sender:
         msg = {'index': i, 'data': pkt.data}
         hash_value = zlib.crc32(json.dumps(msg, sort_keys=True).encode('utf-8'))
         msg = {'hash': hash_value, 'msg': msg}
-        self.log_unacked()
         self.send_msg(msg)
 
     def valid_ack(self, data):
@@ -137,14 +163,24 @@ class Sender:
                 total += len(pkt.data)
         return total
 
+    # returns the number of packets that can be in transit (un-acked)
     def window(self):
-        return self.ack_num() + DATA_SIZE * 4
+        return self.cgn_wnd
+        # return 42
+
+    def in_transit(self):
+        return reduce(lambda total, pkt: total + (1 if pkt.in_transit() else 0), self.packets, 0)
 
     def log_unacked(self):
         result = 'unacked packets: ['
         for i in range(0, len(self.packets)):
             pkt = self.packets[i]
-            result += f'{i if (not pkt.acked) and pkt.was_sent() else "_"}, '
+            if (not pkt.acked) and pkt.was_sent():
+                result += f'{i}, '
+            elif pkt.acked:
+                result += 'x, '
+            else:
+                result += '_, '
         log(result + ']')
 
 
