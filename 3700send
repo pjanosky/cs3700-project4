@@ -6,9 +6,11 @@ from packet import Packet
 
 DATA_SIZE = 1375  # the maximum amount of data sent in one packet
 MAX_MSG_SIZE = 65535  # the maximum size of a message in bytes that the sender expects to receive
+ALPHA = 0.875  # the constant that for update the RTT estimate
 
 
 class Sender:
+
     def __init__(self, host, port):
         self.host = host
         self.remote_port = int(port)
@@ -27,30 +29,36 @@ class Sender:
 
     # run the sender program
     def run(self):
+        data = sys.stdin.read(DATA_SIZE)
+        while len(data) > 0:
+            log('read data')
+            self.packets.append(Packet(data, False, None))
+            data = sys.stdin.read(DATA_SIZE)
+
         while True:
             # if self.seq_num < self.ack_num + self.wnd:
                 # we can send more data
-            inputs = [self.socket, sys.stdin]
+            inputs = [self.socket]
             # else:
             #     # we can't send more data
             #     inputs = [self.socket]
 
             connections = select.select(inputs, [], [], 0.05)[0]
             for conn in connections:
-                if conn == self.socket:
-                    self.recv_ack(conn)
-                elif conn == sys.stdin:
-                    self.recv_input()
+                # if conn == self.socket:
+                self.recv_ack(conn)
+                # elif conn == sys.stdin:
+                #     self.recv_input()
             self.send_packets()
             self.resend_packets()
 
-    # handles receiving data from the simulator to send to the receiver
-    def recv_input(self):
-        data = sys.stdin.read(DATA_SIZE)
-        if len(data) > 0:
-            log('read data')
-            pkt = Packet(data, False, None)
-            self.packets.append(pkt)
+    # # handles receiving data from the simulator to send to the receiver
+    # def recv_input(self):
+    #     data = sys.stdin.read(DATA_SIZE)
+    #     if len(data) > 0:
+    #         log('read data')
+    #         pkt = Packet(data, False, None)
+    #         self.packets.append(pkt)
 
     # handles receiving an ack from the receiver
     def recv_ack(self, conn):
@@ -60,7 +68,9 @@ class Sender:
             log('Received corrupted ACK')
         else:
             log(f'Received ACK: {msg}')
-            self.packets[msg['index']].acked = True
+            pkt =  self.packets[msg['index']]
+            pkt.acked = True
+            self.rtt = ALPHA * self.rtt + (1 - ALPHA) * (now() - pkt.send_time)
 
             if self.ack_idx() == len(self.packets) - 1:
                 log('All done!')
