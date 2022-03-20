@@ -1,163 +1,146 @@
 #!/usr/bin/env -S python3 -u
 
-import argparse, socket, time, json, select, struct, sys, math
-
-
-class Packet:
-    def __init__(self, data, seq_num):
-        self.data = data
-        self.seq_num = seq_num
-
-    def __eq__(self, other):
-        return self.seq_num == other.seq_num
-
-    def __str__(self):
-        return json.dumps({'seq_num': self.seq_num})
+import argparse, socket, time, json, select, sys, zlib
+from packet import Packet
 
 
 DATA_SIZE = 1375  # the maximum amount of data sent in one packet
 MAX_MSG_SIZE = 65535  # the maximum size of a message in bytes that the sender expects to receive
 
 
-# class Sender:
-#     def __init__(self, host, port):
-#         self.host = host
-#         self.remote_port = int(port)
-#         log('Sender starting up using port %s' % self.remote_port)
-#         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#         self.socket.bind(('0.0.0.0', 0))
-#         self.seq_num = 0
-#         self.ack_num = 0
-#         self.adv_wnd = DATA_SIZE * 2
-#         self.packets = []
-#
-#     # send a json encoded message to the receiver
-#     def send_msg(self, message):
-#         self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
-#
-#     # run the sender program
-#     def run(self):
-#         while True:
-#             sockets = [self.socket, sys.stdin] if self.ack_num >= self.seq_num - self.adv_wnd else [self.socket]
-#             socks = select.select(sockets, [], [], 0.1)[0]
-#
-#             for conn in socks:
-#                 if conn == self.socket:
-#                     self.recv_ack(conn)
-#                 elif conn == sys.stdin:
-#                     self.recv_input()
-#
-#                 # send all the packets we can based on the current window
-#                 log(f'seq_num: {self.seq_num}, ack_num: {self.ack_num}, adv_wnd: {self.adv_wnd}')
-#                 self.send_packets(self.seq_num)
-#
-#     def recv_ack(self, conn):
-#         data, addr = conn.recvfrom(MAX_MSG_SIZE)
-#         msg = json.loads(data.decode('utf-8'))
-#         self.ack_num = msg['ack']
-#         log(f'Received ACK: {msg}')
-#
-#     def recv_input(self):
-#         # receiving more data to send
-#         data = sys.stdin.read(DATA_SIZE)
-#         log(f'reading input')
-#
-#         # check if all data has been sent
-#         if len(data) == 0:
-#             log('All done!')
-#             sys.exit(0)
-#
-#         # cache a new packet to be sent
-#         pkt = Packet(data, self.seq_num)
-#         self.packets.append(pkt)
-#
-#     # sends all packet after a given sequence number and within the current window
-#     def send_packets(self, seq_num):
-#         limit = self.ack_num + self.adv_wnd
-#         for pkt in self.packets:
-#             if pkt.seq_num >= seq_num and pkt.seq_num + len(pkt.data) <= limit:
-#                 self.send_pkt(pkt)
-#
-#     # sends a data message for a given packet
-#     def send_pkt(self, pkt):
-#         self.seq_num += len(pkt.data)
-#         msg = {'type': 'data', 'seq': self.seq_num, 'data': pkt.data}
-#         log(f'Sending data to receiver: {pkt.data}')
-#         self.send_msg(msg)
-
-
 class Sender:
     def __init__(self, host, port):
         self.host = host
         self.remote_port = int(port)
-        self.log("Sender starting up using port %s" % self.remote_port)
+        log("Sender starting up using port %s" % self.remote_port)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('0.0.0.0', 0))
-        self.waiting = False
 
         self.seq_num = 0
-        self.ack_num = 0
-        self.adv_wnd = DATA_SIZE * 2
+        self.seq_idx = -1
         self.packets = []
+        self.rtt = 1000  # the estimated RTT in milliseconds
 
-    def log(self, message):
-        sys.stderr.write(message + "\n")
-        sys.stderr.flush()
-
+    # sends a string message to the receiver
     def send_msg(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
 
+    # run the sender program
     def run(self):
         while True:
-            sockets = [self.socket, sys.stdin] if not self.waiting else [self.socket]
+            # if self.seq_num < self.ack_num + self.wnd:
+                # we can send more data
+            inputs = [self.socket, sys.stdin]
+            # else:
+            #     # we can't send more data
+            #     inputs = [self.socket]
 
-            socks = select.select(sockets, [], [], 0.1)[0]
-            for conn in socks:
+            connections = select.select(inputs, [], [], 0.05)[0]
+            for conn in connections:
                 if conn == self.socket:
                     self.recv_ack(conn)
                 elif conn == sys.stdin:
                     self.recv_input()
-                self.send_packets(self.seq_num)
+            self.send_packets()
+            self.resend_packets()
 
+    # handles receiving data from the simulator to send to the receiver
     def recv_input(self):
         data = sys.stdin.read(DATA_SIZE)
-        if len(data) == 0:
-            self.log("All done!")
-            sys.exit(0)
+        if len(data) > 0:
+            log('read data')
+            pkt = Packet(data, False, None)
+            self.packets.append(pkt)
 
-        msg = {"type": "msg", "data": data}
-        self.log("Sending message '%s'" % msg)
-        # self.send_pkt(Packet(msg['data'], 0))
-        self.waiting = True
-
-        pkt = Packet(data, self.seq_num)
-        self.packets.append(pkt)
-
+    # handles receiving an ack from the receiver
     def recv_ack(self, conn):
         data, addr = conn.recvfrom(MAX_MSG_SIZE)
-        msg = json.loads(data.decode('utf-8'))
-        self.ack_num = msg['ack']
-        self.waiting = False
-        log(f'Received ACK: {msg}')
+        msg = self.valid_ack(data)
+        if msg is None:
+            log('Received corrupted ACK')
+        else:
+            log(f'Received ACK: {msg}')
+            self.packets[msg['index']].acked = True
 
-    # sends all packet after a given sequence number and within the current window
-    def send_packets(self, seq_num):
-        limit = self.ack_num + self.adv_wnd
-        for pkt in self.packets:
-            if pkt.seq_num >= seq_num and pkt.seq_num + len(pkt.data) <= limit:
-                self.send_pkt(pkt)
+            if self.ack_idx() == len(self.packets) - 1:
+                log('All done!')
+                exit(0)
 
-    # sends a data message for a given packet
-    def send_pkt(self, pkt):
-        self.seq_num += len(pkt.data)
-        msg = {'type': 'data', 'seq': self.seq_num, 'data': pkt.data}
-        log(f'Sending data to receiver: {pkt.data}')
+            self.log_unacked()
+
+    # sends all data messages not yet send withing the current window
+    def send_packets(self):
+        i = self.seq_idx + 1
+        while i < len(self.packets) and self.seq_num < self.window():
+            pkt = self.packets[i]
+            log(f'Sending data to receiver: index={i}')
+            self.send_packet(pkt, i)
+            self.seq_idx += 1
+            self.seq_num += len(pkt.data)
+            i += 1
+
+    # retransmit any packets that have not been ACKed withing a period of time
+    def resend_packets(self):
+        timeout = now() - self.rtt * 2
+        # resend any packets that were sent before timeout
+        for i, pkt in enumerate(self.packets):
+            if not pkt.acked and pkt.was_sent() and pkt.send_time < timeout:
+                log(f'Resending data to receiver: index={i}')
+                self.send_packet(pkt, i)
+
+    def send_packet(self, pkt, i):
+        pkt.send_time = now()
+        msg = {'index': i, 'data': pkt.data}
+        hash_value = zlib.crc32(json.dumps(msg, sort_keys=True).encode('utf-8'))
+        msg = {'hash': hash_value, 'msg': msg}
+        self.log_unacked()
         self.send_msg(msg)
+
+    def valid_ack(self, data):
+        try:
+            msg = json.loads(data.decode('utf-8'))
+        except json.decoder.JSONDecodeError:
+            return None
+
+        if ('hash' in msg and
+                'msg' in msg and
+                'index' in msg['msg'] and
+                zlib.crc32(json.dumps(msg['msg']).encode('utf-8')) == msg['hash']):
+            return msg['msg']
+        else:
+            return None
+
+    # the index of the last packet that has been ACKed
+    def ack_idx(self):
+        for i, pkt in enumerate(self.packets):
+            if not pkt.acked:
+                return i - 1
+        return len(self.packets) - 1
+
+    # the number of bytes that have been successfully ACKed
+    def ack_num(self):
+        total = 0
+        for i, pkt in enumerate(self.packets):
+            if not pkt.acked:
+                return total
+            else:
+                total += len(pkt.data)
+        return total
+
+    def window(self):
+        return self.ack_num() + DATA_SIZE * 4
+
+    def log_unacked(self):
+        result = 'unacked packets: ['
+        for i in range(0, len(self.packets)):
+            pkt = self.packets[i]
+            result += f'{i if (not pkt.acked) and pkt.was_sent() else "_"}, '
+        log(result + ']')
 
 
 # print a debug message to STDERR
 def log(message):
-    sys.stderr.write(message + '\n')
+    sys.stderr.write('-' + message + '\n')
     sys.stderr.flush()
 
 
@@ -169,11 +152,15 @@ def parse_args():
     return parser.parse_args()
 
 
+# returns the current time since the epcoh in ms
+def now():
+    return int(time.time() * 1000)
+
+
 # run the sender program
 if __name__ == '__main__':  # TODO: search this
     args = parse_args()
     sender = Sender(args.host, args.port)
     sender.run()
-
 
 # TODO: theres a problem with the ack/seq numbers and getting select to correctly scan stdin
