@@ -1,7 +1,11 @@
 #!/usr/bin/env -S python3 -u
 
-import argparse, socket, json, select, sys, zlib
-from packet import Packet, now
+import argparse
+import json
+import select
+import socket
+import sys
+import zlib
 
 
 class Receiver:
@@ -9,22 +13,19 @@ class Receiver:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('0.0.0.0', 0))
         self.port = self.socket.getsockname()[1]
-        self.log("Bound to port %d" % self.port)
+        log("Bound to port %d" % self.port)
 
         self.remote_host = None
         self.remote_port = None
 
-        self.received = []  # a bitmap of which packets have been received
-        self.cached_packets = []  # the packets that have yet to be outputted
+        self.packets = []  # the data whose indices correspond to packets that have been received
         self.output_index = -1  # the index of the last packet that has been outputted
 
+    # send a message to the sender
     def send(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), (self.remote_host, self.remote_port))
 
-    def log(self, message):
-        sys.stderr.write(message + "\n")
-        sys.stderr.flush()
-
+    # runs the receiver program
     def run(self):
         while True:
             socks = select.select([self.socket], [], [])[0]
@@ -36,21 +37,26 @@ class Receiver:
                     self.remote_host = addr[0]
                     self.remote_port = addr[1]
 
-                msg = self.valid_msg(data)
-                if msg is None:
-                    log('Received corrupted message')
-                else:
-                    pkt = Packet(msg['index'], msg['data'], None, None)
-                    self.log(f"Received data message, idx: {msg['index']}")
-                    self.send_ack(msg['index'])
+                # handle the message
+                self.recv_msg(data)
 
-                    if not self.was_received(msg['index']):
-                        # this is a new packet
-                        self.mark_received(msg['index'])
-                        self.cached_packets.append(pkt)
-                        self.output_data()
+    # handles receiving a message from the sender
+    def recv_msg(self, data):
+        msg = self.parse_msg(data)
+        if msg is None:
+            log('Received corrupted message')
+        else:
+            log(f"Received data message, idx: {msg['index']}")
+            self.send_ack(msg['index'])
 
-    def valid_msg(self, data):
+            if not self.was_received(msg['index']):
+                # this is a new packet
+                self.insert_packet(msg['data'], msg['index'])
+                self.output_data()
+
+    # is a pieces of data received from the sender a valid data message?
+    @classmethod
+    def parse_msg(cls, data):
         try:
             msg = json.loads(data.decode('utf-8'))
         except json.decoder.JSONDecodeError:
@@ -65,6 +71,7 @@ class Receiver:
         else:
             return None
 
+    # sends an ack message back to the sender
     def send_ack(self, index):
         msg = {'index': index}
         hash_value = zlib.crc32(json.dumps(msg, sort_keys=True).encode('utf-8'))
@@ -72,43 +79,37 @@ class Receiver:
         log(f'Sending ACK: index={index}')
         self.send(msg)
 
-    def mark_received(self, index):
-        if index >= len(self.received):
-            self.received += [False for _ in range(index - len(self.received))]
-            self.received.append(True)
-        else:
-            self.received[index] = True
-
-    def was_received(self, index):
-        return index < len(self.received) and self.received[index]
-
-    def pop_cached(self, index):
-        for pkt in self.cached_packets:
-            if pkt.index == index:
-                self.cached_packets.remove(pkt)
-                return pkt
-        return None
-
+    # output any new data received in order
+    # stops outputting when there is no more data or portions of data are missing
     def output_data(self):
-        for i in range(self.output_index + 1, len(self.received)):
+        for i in range(self.output_index + 1, len(self.packets)):
+            pkt = self.packets[i]
             if self.was_received(i):
                 self.output_index = i
-                print(self.pop_cached(i).data, end='', flush=True)
+                print(pkt, end='', flush=True)
             else:
                 return
 
-    def log_acks(self):
-        result = '['
-        for i in range(0, len(self.received)):
-            result += f'{i if self.was_received(i) else "_"}, '
-        log(result + ']')
+    # insert piece of data at the index corresponding the packet
+    def insert_packet(self, pkt, index):
+        if index >= len(self.packets):
+            self.packets += [None for _ in range(index - len(self.packets))]
+            self.packets.append(pkt)
+        else:
+            self.packets[index] = pkt
+
+    # determines whether a packet with a given index was received
+    def was_received(self, index):
+        return index < len(self.packets) and self.packets[index] is not None
 
 
+# logs a debug message to stderr
 def log(message):
     sys.stderr.write(str(message) + '\n')
     sys.stderr.flush()
 
 
+# runs the receiver program
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='receive data')
     args = parser.parse_args()
